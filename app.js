@@ -9,7 +9,11 @@ const ApiError = require('./utils/ApiError');
 
 const app = express();
 
-app.use(cors({ origin: 'http://localhost:5173' }));
+const allowedOrigins = ['http://localhost:5173'];
+if (process.env.CORS_ORIGIN?.trim()) {
+  allowedOrigins.push(process.env.CORS_ORIGIN.trim());
+}
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {

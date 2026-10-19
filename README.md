@@ -76,8 +76,9 @@ To run without watch mode:
 npm start
 ```
 
-The server supports a hosting-provided `PORT` for future Render deployment.
-Deployment is not part of this stage.
+`npm start` runs `node server.js`. The server listens on `process.env.PORT`
+or defaults to 5000, without restricting the listening host to localhost.
+These startup settings are ready for Render and do not require changes.
 
 ## API testing
 
@@ -98,7 +99,15 @@ Expected HTTP status: `200`. Expected JSON:
 ```
 
 If you changed the port, use that port in the URL.
-Only `http://localhost:5173` is configured as the allowed browser CORS origin.
+The browser CORS allowlist always includes `http://localhost:5173` and also
+includes the optional `CORS_ORIGIN` environment value. For example,
+`CORS_ORIGIN=https://pickleball-demo.example` is a fake documentation origin;
+replace it with the actual Vercel frontend origin in Render's environment
+settings later. Use the exact scheme and hostname (and port if applicable),
+without a path or trailing slash, then restart the backend. Leaving it unset
+or blank permits only the local origin. No wildcard origins are enabled.
+Other origins receive no CORS permission headers; this is not an HTTP access
+block for tools such as curl.
 CORS controls browser access to responses; it does not authenticate requests.
 
 Unknown routes return a JSON `404` response. Malformed JSON returns `400`,
@@ -146,6 +155,7 @@ Required environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | HTTP port; defaults to 5000 if unset |
+| `CORS_ORIGIN` | Optional additional frontend origin, e.g. `https://pickleball-demo.example` |
 | `MONGODB_URI` | Private Atlas connection string |
 | `JWT_SECRET` | Private JWT signing and verification secret |
 
