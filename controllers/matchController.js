@@ -20,6 +20,12 @@ async function createMatch(req, res) {
     const difficulty = await DifficultySetting.findOne({ _id: req.body.difficultyId, isActive: true }).session(session);
     if (!difficulty) throw new ApiError(400, 'Choose an active difficulty');
 
+    // Serialize new references against Admin removal/deactivation of this level.
+    const level = await DifficultySetting.updateOne(
+      { _id: difficulty._id, isActive: true }, { $inc: { __v: 1 } }, { session, timestamps: false },
+    );
+    if (level.matchedCount !== 1) throw new ApiError(409, 'Difficulty changed; choose an active level again');
+
     // A write to the user serializes creation against account deletion.
     // Without it, a concurrent deletion could leave an orphaned new match.
     const user = await User.updateOne(

@@ -1,9 +1,9 @@
 # Pickle Ball Pixel Game Backend
 
 The backend uses Express, Node.js, CommonJS, and MongoDB Atlas through Mongoose.
-Stage 4A adds player profile management, active difficulty retrieval, and owned
-match CRUD alongside registration, login, bcrypt, and JWT authentication.
-Frontend API integration and Admin management are reserved for later stages.
+Stage 4B adds protected Admin APIs and a manually confirmed Admin promotion
+command to the existing profile, difficulty, match, and authentication features.
+The frontend repository and an Admin dashboard are outside this backend stage.
 
 ## Installation
 
@@ -190,8 +190,8 @@ Send them using `Authorization: Bearer <token>`. Authentication verifies the
 signature, expiration, allowed algorithm, and user ID, then loads that user
 from MongoDB. Deleted/nonexistent users are rejected. The role comes from
 the current database record, not from browser fields or JWT role claims.
-The reusable `requireRole` middleware is ready for future Admin routes;
-no Admin routes are implemented in this stage.
+The reusable `requireRole` middleware protects all `/api/admin` routes using
+the role loaded from MongoDB by authentication.
 
 Invalid input returns 400. Validly formatted but incorrect login credentials
 return 401 with the same `Invalid username or password` message for unknown
@@ -477,3 +477,142 @@ Updated files: `models/User.js`, `utils/safeUser.js`,
 `controllers/userController.js`, `routes/userRoutes.js`, `app.js`, `server.js`,
 `package.json`, and this README. `.env`, `.env.example`, `.gitignore`, the
 lockfile, and the frontend repository were not modified in Stage 4A.
+
+## Stage 4B: Admin API
+
+Every `/api/admin` endpoint requires a valid Bearer token and the current
+database role `ADMIN`. A missing/invalid token returns 401; a registered
+PLAYER returns 403. Token role claims and request-body roles cannot grant
+access. Deleting a user makes their old tokens unusable. Role changes are
+reflected on the next authenticated request without issuing a new token.
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| GET | `/api/admin/users` | Lists registered PLAYER accounts as `{ users }` |
+| GET | `/api/admin/matches` | Lists system matches, newest updated first, as `{ matches }` |
+| DELETE | `/api/admin/users/:id` | Deletes one PLAYER and their matches transactionally; 204 |
+| GET | `/api/admin/difficulty` | Lists active and inactive settings as `{ difficulties }` |
+| POST | `/api/admin/difficulty` | Creates a setting; 201 and `{ difficulty }` |
+| PUT | `/api/admin/difficulty/:id` | Updates name/speeds/active flag; 200 and `{ difficulty }` |
+| DELETE | `/api/admin/difficulty/:id` | Removes an unused setting; 204 |
+
+Admin account deletion is limited to PLAYER targets. This route rejects
+self-deletion and deletion of another ADMIN with 403. The target role is
+checked again in the transactional delete filter, protecting accounts that
+are concurrently promoted. Player deletion and match cleanup commit together;
+failure rolls back both. Other players' accounts and matches are unaffected.
+User responses never include passwords or hashes. Match responses use the
+existing explicit safe fields and difficulty snapshots; no password-bearing
+user documents are populated into them.
+
+Difficulty POST accepts `levelName` and optional `aiSpeed`, `ballSpeed`,
+`isActive`. Defaults are AI speed 200, ball speed 300, active true. PUT accepts
+any non-empty subset of those four fields. Other fields are rejected. Names
+must be 1-32 letters, numbers, spaces, underscores, or hyphens, beginning with
+a letter or number; surrounding whitespace is removed. Name uniqueness uses
+the existing exact-name MongoDB index, with duplicate-key errors returning
+409. Speeds must be actual JSON numbers from 1 to 2000 logical Canvas pixels
+per second; `isActive` must be a JSON boolean. Invalid bodies/IDs return 400,
+missing records 404, and database failures a generic 500.
+
+Use PUT `{ "isActive": false }` to deactivate or `{ "isActive": true }` to
+reactivate. Deactivation hides the setting from the public active list and
+prevents new matches/preferences from choosing it. It does not alter existing
+matches, scores, status, or snapshots. Existing matches can still resume from
+their saved snapshot. Renaming or changing speeds also affects only future
+selections, not stored snapshots.
+
+DELETE is allowed only if no match (including completed history) or user
+preference references the setting. A referenced setting returns 409 with
+guidance to deactivate it instead. Removal is transactional. New match and
+preference references also write the difficulty's internal version within
+their transactions, serializing these operations against deletion. This
+prevents a simultaneous selection from creating a dangling reference. These
+internal version writes do not change the setting's public timestamps.
+
+## Manually grant the first Admin role
+
+No account is promoted at server startup or during tests. Public registration
+always creates PLAYER accounts, and no API endpoint changes roles. The
+following is a manual backend maintenance command, not an HTTP endpoint.
+
+1. Choose or register the intended person's own account through the existing
+   registration endpoint. Do not select an old test account by default.
+2. Obtain explicit approval for that particular account's promotion.
+3. Open an interactive VS Code terminal in this backend folder and run:
+
+```powershell
+npm run admin:grant -- your_registered_username
+```
+
+The command connects to `pickleball_game`, finds the normalized existing
+username, and displays only its username and ID. It then requires the exact
+confirmation `PROMOTE your_registered_username`. A blank response, `yes`,
+misspelling, or different username cancels without any role change. The
+command refuses noninteractive/piped execution. There is no `--yes` bypass,
+hardcoded account, password reset, new-account creation, or automatic promotion.
+An existing ADMIN produces a no-op. The update changes only the role (and
+automatic modification timestamp), with an atomic PLAYER/ID/username filter.
+
+If the documented DNS limitation applies, the override is limited to this
+manual command's process:
+
+```powershell
+$env:ATLAS_TEST_PUBLIC_DNS = '1'
+try { npm run admin:grant -- your_registered_username } finally { Remove-Item Env:ATLAS_TEST_PUBLIC_DNS }
+```
+
+After confirmation, log in normally as that user and send the returned token
+to Admin endpoints. Each groupmate should register their own account and
+receive individually approved promotion if Admin access is needed. Do not
+share passwords or tokens. Database access and the private backend environment
+are required to run the maintenance command; it is not exposed to browsers.
+
+## Manually test Admin endpoints
+
+Start the server using the existing development/DNS instructions. After an
+approved Admin has logged in, store the response in `$adminLogin` without
+printing its token. Use these dummy examples with that account's token:
+
+```powershell
+$api = 'http://localhost:5000/api'
+$adminHeaders = @{ Authorization = "Bearer $($adminLogin.token)" }
+Invoke-RestMethod "$api/admin/users" -Headers $adminHeaders
+Invoke-RestMethod "$api/admin/matches" -Headers $adminHeaders
+Invoke-RestMethod "$api/admin/difficulty" -Headers $adminHeaders
+
+$body = @{ levelName = 'Demo Practice'; aiSpeed = 160; ballSpeed = 260 } | ConvertTo-Json
+$level = (Invoke-RestMethod -Method Post -Uri "$api/admin/difficulty" -Headers $adminHeaders -ContentType 'application/json' -Body $body).difficulty
+$body = @{ isActive = $false } | ConvertTo-Json
+Invoke-RestMethod -Method Put -Uri "$api/admin/difficulty/$($level.id)" -Headers $adminHeaders -ContentType 'application/json' -Body $body
+
+# Optional permanent actions: execute only on approved disposable data.
+# Invoke-RestMethod -Method Delete -Uri "$api/admin/difficulty/$($level.id)" -Headers $adminHeaders
+# Invoke-RestMethod -Method Delete -Uri "$api/admin/users/<disposable-player-id>" -Headers $adminHeaders
+```
+
+Repeat an Admin GET with a PLAYER token to verify 403, or omit authentication
+to verify 401. Existing players still use the same authentication, profile,
+and match routes as before. There is no Admin dashboard, impersonation,
+role-management API, account deactivation, or Admin demotion command in this
+stage. List endpoints remain unpaginated for this course demonstration.
+
+`npm test` runs all prior suites plus isolated Admin tests. The Admin suite
+mocks MongoDB methods and transactions; it covers authorization, safe lists,
+deletion/rollback, difficulty validation/CRUD, reference protection, snapshot
+preservation, and exact promotion confirmation. It never connects to Atlas,
+grants a real role, or deletes real data. Run `npm audit` for dependency checks.
+Real Admin writes require separate approval; none are performed automatically.
+
+Stage 4B files created: `controllers/adminController.js`, `routes/adminRoutes.js`,
+`scripts/grant-admin.js`, and `test/admin.test.js`. Updated: `app.js`,
+`controllers/userController.js`, `controllers/matchController.js`,
+`test/crud.test.js`, `package.json`, and this README. No dependencies or models
+were added or changed in this stage.
+
+Stage 4B verification on October 19, 2026: all 64 isolated tests passed
+(43 previous tests plus 21 Admin tests), syntax checks passed, and npm audit
+reported 0 vulnerabilities. No real Atlas accounts were promoted, modified,
+or deleted for these tests; no real difficulty settings or matches were
+changed. Admin database transactions and confirmation behavior were verified
+with mocks, not with real Admin writes.

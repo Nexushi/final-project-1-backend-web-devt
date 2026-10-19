@@ -68,6 +68,12 @@ before(async () => {
   mock.method(DifficultySetting, 'find', filter => ({ sort: async () =>
     [...difficulties.values()].filter(item => satisfies(item, filter)).sort((a, b) => a.aiSpeed - b.aiSpeed).map(clone),
   }));
+  mock.method(DifficultySetting, 'updateOne', async (filter, update, options) => {
+    assert.equal(options.session, session);
+    assert.equal(options.timestamps, false);
+    assert.equal(update.$inc.__v, 1);
+    return { matchedCount: lookup(difficulties, filter) ? 1 : 0 };
+  });
   mock.method(Match, 'create', async (data, options) => {
     assert.equal(options.session, session);
     const document = new Match(data[0]);

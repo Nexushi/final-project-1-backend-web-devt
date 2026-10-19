@@ -9,7 +9,8 @@
     "test": "node --test test/*.test.js",
     "test:atlas": "node test/atlas-auth.js",
     "test:atlas:crud": "node test/atlas-crud.js",
-    "seed:difficulties": "node scripts/seed-difficulties.js"
+    "seed:difficulties": "node scripts/seed-difficulties.js",
+    "admin:grant": "node scripts/grant-admin.js"
   },
   "repository": {
     "type": "git",

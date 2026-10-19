@@ -24,17 +24,24 @@ async function updateProfile(req, res, next) {
 
     if ('preferredDifficultyId' in req.body) {
       const id = req.body.preferredDifficultyId;
-      if (id !== null) {
-        if (!isObjectId(id)) throw new ApiError(400, 'Invalid preferredDifficultyId');
-        const difficulty = await DifficultySetting.findOne({ _id: id, isActive: true });
-        if (!difficulty) throw new ApiError(400, 'Choose an active difficulty');
-      }
+      if (id !== null && !isObjectId(id)) throw new ApiError(400, 'Invalid preferredDifficultyId');
       changes.preferredDifficultyId = id;
     }
 
-    const user = await User.findOneAndUpdate(
-      { _id: req.user._id }, { $set: changes }, { returnDocument: 'after', runValidators: true },
-    );
+    const user = await mongoose.connection.transaction(async session => {
+      if (changes.preferredDifficultyId) {
+        const difficulty = await DifficultySetting.findOne({ _id: changes.preferredDifficultyId, isActive: true }).session(session);
+        if (!difficulty) throw new ApiError(400, 'Choose an active difficulty');
+        // Keep a new preference from racing an Admin's difficulty deletion.
+        const level = await DifficultySetting.updateOne(
+          { _id: difficulty._id, isActive: true }, { $inc: { __v: 1 } }, { session, timestamps: false },
+        );
+        if (level.matchedCount !== 1) throw new ApiError(409, 'Difficulty changed; choose an active level again');
+      }
+      return User.findOneAndUpdate(
+        { _id: req.user._id }, { $set: changes }, { returnDocument: 'after', runValidators: true, session },
+      );
+    });
     if (!user) throw new ApiError(401, 'Account no longer exists');
     res.json({ user: safeUser(user) });
   } catch (err) {

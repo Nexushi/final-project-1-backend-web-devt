@@ -4,6 +4,7 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const difficultyRoutes = require('./routes/difficultyRoutes');
 const matchRoutes = require('./routes/matchRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 const ApiError = require('./utils/ApiError');
 
 const app = express();
@@ -22,6 +23,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/difficulty', difficultyRoutes);
 app.use('/api/matches', matchRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
