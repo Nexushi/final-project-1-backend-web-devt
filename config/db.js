@@ -1,3 +1,8 @@
+//an override for dns servers for mongodb srv lookups
+const dns = require('dns');
+if (process.env.DNS_SERVERS) {
+  dns.setServers(process.env.DNS_SERVERS.split(',').map((s) => s.trim()));
+}
 const mongoose = require('mongoose');
 
 async function connectDB() {
