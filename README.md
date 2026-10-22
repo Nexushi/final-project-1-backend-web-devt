@@ -626,3 +626,114 @@ reported 0 vulnerabilities. No real Atlas accounts were promoted, modified,
 or deleted for these tests; no real difficulty settings or matches were
 changed. Admin database transactions and confirmation behavior were verified
 with mocks, not with real Admin writes.
+
+## Stage 2: API rate limiting (local implementation; Render verification required)
+
+`express-rate-limit` 8.7.1 adds independent in-memory policies. Existing
+authentication, JWTs, ownership checks, schemas, scoring, response bodies,
+Stage 1 headers, CORS origins, and the 100 KB JSON limit remain unchanged.
+Limited requests return 429 with `{ "message": "Too many requests. Please wait and try again." }`,
+`Retry-After` in seconds, and standard `RateLimit` / `RateLimit-Policy` headers.
+The existing CORS exposed-header configuration is unchanged; browser JavaScript
+cannot read these new response headers without a future explicit CORS change.
+The JSON message remains readable by the allowed frontend origins.
+
+| Policy | Protected endpoints | Initial budget | Key and counting |
+| --- | --- | --- | --- |
+| Login burst | POST `/api/auth/login` | 120 per minute | Network/IP; every request reaching the limiter, including successful logins |
+| Login failures | POST `/api/auth/login` | 120 per 15 minutes | Same network/IP; successful responses are refunded after completion |
+| Registration | POST `/api/auth/register` | 60 per hour | Network/IP; successful and failed requests reaching the limiter |
+| Account writes | PUT/DELETE `/api/users/profile`; POST `/api/matches`; PATCH/DELETE `/api/matches/:id`; DELETE `/api/admin/users/:id`; POST `/api/admin/difficulty`; PUT/DELETE `/api/admin/difficulty/:id` | 300 per minute, shared across these operations | Current authenticated MongoDB user ID; successes and failures after authentication/role checks |
+| Match creation | POST `/api/matches` | Additional 60 per minute | Current authenticated MongoDB user ID |
+
+Authentication limits run before credential validation, bcrypt and controller
+database operations. The existing JSON parser still runs first, so malformed or
+oversized JSON is rejected by Stage 1 before reaching these route limiters.
+Write limits run after authentication, and after the ADMIN role check on Admin
+routes. They cannot replace authentication or stop database work done by JWT
+authentication itself. No username, body/query user ID, raw token, or raw
+forwarded-header value is used as a custom limiter key.
+
+GET/HEAD/OPTIONS do not consume write budgets. CORS handles preflight before
+route limiters. Public health/difficulty and authenticated reads are unchanged.
+Different players on school Wi-Fi have separate write budgets. Their network
+authentication budgets are shared; the generous initial thresholds allow a class
+to log in, but repeated failures or more than 60 registrations from one IP in an
+hour can temporarily affect other classmates. Successful logins consume the burst
+budget but are refunded from the longer failure budget. In-flight requests count
+until completed. There is no persistent account lock or account-record mutation.
+Wait for `Retry-After`; blocked requests do not extend the current window.
+
+The write budget permits five writes per second averaged over a minute, and
+the creation budget permits one new match per second averaged over a minute.
+These policies allow bursts and are intended to accommodate point-by-point
+saves and automated local gameplay. A depleted shared write budget temporarily
+blocks saves/deletes too; reads remain available. Do not blindly retry failed
+saves, and continue honoring the existing version/conflict rules.
+
+### Proxy trust: production deployment prerequisite
+
+**This change deliberately does not change Express `trust proxy` (default false).
+Do not deploy the IP-based auth policies to Render until its actual request
+path and header sanitization have been verified and an appropriate trust policy
+has been reviewed.** Without that work, proxy IPs can share authentication
+counters across unrelated visitors, causing accidental 429 responses.
+
+With `trust proxy: false`, Express uses the socket peer address, ignoring claimed
+client IP headers. This preserves direct localhost behavior and prevents direct
+clients from rotating forwarded headers to evade a budget. With an explicit
+trusted-proxy policy, Express walks the socket/X-Forwarded-For chain from right
+to left and stops at the first untrusted peer. Never take the leftmost header
+entry directly. The limiter's default key generator normalizes IPv4-mapped IPv6
+and groups IPv6 by /56 to reduce address-rotation bypasses. These subnet budgets
+can aggregate legitimate clients too.
+
+Research sources:
+- [Render edge protection and client-IP guidance](https://render.com/articles/how-render-handles-ddos-attacks)
+- [Express proxy trust and spoofing warnings](https://expressjs.com/en/guide/behind-proxies/)
+- [express-rate-limit configuration](https://express-rate-limit.mintlify.app/reference/configuration)
+
+Render documents edge proxies and X-Forwarded-For, but the repository does not
+establish the deployment's complete proxy chain, trusted ingress addresses,
+header overwrite/append guarantees, or alternate/direct paths. Neither `true`
+nor a guessed hop count is configured. Before a separately approved deployment:
+
+1. Establish every ingress path (onrender hostname, custom domain, extra CDN,
+   and any direct/private route) and the immediate proxy peers.
+2. Confirm how ingress removes or appends attacker-supplied forwarded headers;
+   obtain reliable trusted-proxy address ranges or a proven fixed-hop topology.
+3. Review an explicit trust policy against every path. A hop count is acceptable
+   only if shorter paths cannot let client-supplied entries become trusted.
+4. Verify independent client identities, shared-IP behavior and forged prefixes
+   in an approved disposable/staging setup. Use private diagnostics; do not add
+   public IP/debug endpoints or test/flood production.
+5. Keep limiter validation warnings enabled and resolve them before release.
+
+The local proxy fixtures trust only explicitly simulated peers; they do not
+prove Render's configuration. Validation warnings are not disabled in production.
+For example, forwarded headers with default false trigger the library's warning.
+`Forwarded`, `True-Client-IP` and similar headers are not custom identity sources.
+
+### In-memory limits and isolated verification
+
+Each policy has a separate MemoryStore. Counters expire in their configured
+windows and reset on process restart, redeployment or a Render process restart.
+Multiple processes/instances have independent counters; use a compatible shared
+store before relying on a service-wide budget across instances. No database
+collection, schema, environment variable or Render dashboard setting was added.
+Rate limiting is a basic abuse control; distributed clients can still evade
+per-IP budgets, and unbounded list pagination remains a separate future task.
+
+`test/rateLimits.test.js` injects small policy budgets and independent stores
+into real app/routes. It uses mocked database calls, real JWT checks and local
+HTTP servers, and checks threshold rejection before bcrypt/write work, success
+refunds, expiry with a controlled clock, shared networks, proxy trust/spoofing,
+IPv4/IPv6 handling, preflights, authorization and repeated point saves. It never
+loads `.env`, connects to Atlas, or writes persistent data. The existing 81
+tests remain unchanged.
+
+```powershell
+npm.cmd test
+npm.cmd audit --omit=dev
+git diff --check
+```
